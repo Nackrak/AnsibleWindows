@@ -2,85 +2,50 @@
 - name: Logging Setup für Windows EC2
   hosts: winhosts
   gather_facts: yes
-  vars:
-    software_list:
-      - name: "SoftwareXYZ"
-        process_name: "SoftwareXYZ"
-        container_name: "softwarexyz_container"
-      - name: "SoftwareABC"
-        process_name: "SoftwareABC"
-        container_name: "softwareabc_container"
-    logging_base_path: "C:\\myapp"
-    s3_bucket_name: "ansible3testnow"
-    s3_region: "eu-central-1"
-
   tasks:
 
-    - name: Erstelle Logging-Verzeichnis falls nicht vorhanden
+    - name: Prüfe, ob Software läuft (Bare-metal)
+      win_shell: |
+        # Beispiel: Prüfen, ob ein bestimmter Prozess läuft
+        $proc = Get-Process -Name "MeineSoftware" -ErrorAction SilentlyContinue
+        if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
+      register: software_status
+
+    - name: Setze Variable software_location
+      set_fact:
+        software_location: "baremetal"
+
+    - name: Prüfe, ob Logging existiert
+      win_stat:
+        path: C:\myapp\logging.conf
+      register: logging_conf
+
+    - name: Setze logging_needed
+      set_fact:
+        logging_needed: "{{ not logging_conf.stat.exists }}"
+
+    - name: Erstelle Logging-Verzeichnis
       win_file:
-        path: "{{ logging_base_path }}"
+        path: C:\myapp
         state: directory
 
-    - name: Prüfe alle Softwarelösungen
-      loop: "{{ software_list }}"
-      loop_control:
-        loop_var: software
-      block:
+    - name: Logging konfigurieren
+      win_copy:
+        src: files/logging.conf
+        dest: C:\myapp\logging.conf
+      when: logging_needed
 
-        - name: Prüfe, ob Software Prozess läuft (bare metal)
-          win_shell: |
-            if (Get-Process -Name "{{ software.process_name }}" -ErrorAction SilentlyContinue) {
-                Write-Output "running"
-            } else {
-                Write-Output "not_running"
-            }
-          register: software_process
-          ignore_errors: yes
+    - name: Erstelle Logfile
+      win_copy:
+        content: |
+          Software: MeineSoftware
+          Status: {{ software_status.stdout }}
+          Logging gesetzt: {{ logging_needed }}
+        dest: C:\myapp\logging_info.txt
 
-        - name: Prüfe, ob Software Container läuft
-          win_shell: docker ps --format "{{ '{{.Names}}' }}" 2>$null
-          register: docker_containers
-          ignore_errors: yes
-
-        - name: Bestimme Software Location
-          set_fact:
-            software_location: >-
-              {% if docker_containers.stdout_lines is defined and software.container_name in docker_containers.stdout_lines %}
-                container
-              {% elif software_process.stdout == "running" %}
-                baremetal
-              {% else %}
-                not_installed
-              {% endif %}
-
-        - name: Prüfe, ob Logging Config existiert
-          win_stat:
-            path: "{{ logging_base_path }}\\{{ software.name }}_logging.conf"
-          register: logging_stat
-
-        - name: Setze Variable logging_needed
-          set_fact:
-            logging_needed: "{{ not logging_stat.stat.exists }}"
-
-        - name: Logging konfigurieren
-          win_copy:
-            content: |
-              # Logging Configuration for {{ software.name }}
-              Software running on: {{ software_location }}
-              Logging applied: {{ logging_needed }}
-            dest: "{{ logging_base_path }}\\{{ software.name }}_logging.conf"
-          when: logging_needed
-
-        - name: Erstelle Logfile
-          win_copy:
-            content: |
-              Software: {{ software.name }}
-              Location: {{ software_location }}
-              Logging Configured: {{ logging_needed }}
-            dest: "{{ logging_base_path }}\\{{ software.name }}_logging_info.txt"
-
-        - name: Lade Logfile zu S3
-          win_shell: |
-            Import-Module AWSPowerShell
-            Write-S3Object -BucketName "{{ s3_bucket_name }}" -File "{{ logging_base_path }}\\{{ software.name }}_logging_info.txt" -Key "{{ software.name }}_logging_info.txt" -Region "{{ s3_region }}"
-          ignore_errors: yes
+    - name: Lade Logfile zu S3
+      win_shell: |
+        Import-Module AWSPowerShell
+        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
+      args:
+        executable: powershell.exe
