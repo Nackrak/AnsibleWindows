@@ -3,7 +3,7 @@
   gather_facts: yes
   tasks:
 
-    - name: Prüfe, ob Edge auf Bare-metal läuft
+    - name: Prüfe, ob Edge auf Bare Metal läuft
       win_shell: |
         $proc = Get-Process -Name "msedge" -ErrorAction SilentlyContinue
         if ($proc) { Write-Output "baremetal" } else { Write-Output "none" }
@@ -13,14 +13,14 @@
       win_shell: |
         $docker = Get-Command docker -ErrorAction SilentlyContinue
         if ($docker) {
-          $container = docker ps --filter "name=edge" --format "{{.Names}}"
+          $container = docker ps --filter "name=edge" --format "{{ '{{.Names}}' }}"
           if ($container) { Write-Output "container" } else { Write-Output "none" }
         } else {
           Write-Output "none"
         }
       register: edge_container_status
 
-    - name: Setze Variable software_location
+    - name: Setze Variable software_location für Edge
       set_fact:
         edge_location: >-
           {% if edge_status.stdout == "baremetal" %}
@@ -31,17 +31,36 @@
             not_installed
           {% endif %}
 
+    - name: Prüfe, ob Logging existiert
+      win_stat:
+        path: C:\myapp\logging.conf
+      register: log_file
+
+    - name: Setze logging_needed
+      set_fact:
+        logging_needed: "{{ not log_file.stat.exists }}"
+
     - name: Erstelle Logging-Verzeichnis
       win_file:
         path: C:\myapp
         state: directory
 
-    - name: Logging konfigurieren für Edge
+    - name: Logging konfigurieren (nur wenn nötig)
       win_shell: |
-        "Software: Microsoft Edge
-        Location: {{ edge_location }}" | Out-File -FilePath C:\myapp\logging_edge.txt -Encoding UTF8
+        "software=Microsoft Edge`nlocation={{ edge_location }} `nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
+      when: logging_needed
+
+    - name: Erstelle Logfile mit Infos für S3
+      win_shell: |
+        $content = @"
+Software: Microsoft Edge
+Location: {{ edge_location }}
+LoggingConfigured: yes
+"@
+        $content | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
 
     - name: Lade Logfile zu S3
       win_shell: |
         Import-Module AWSPowerShell
-        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_edge.txt" -Key "logging_edge.txt" -Region "eu-central-1"
+        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
+      ignore_errors: yes
