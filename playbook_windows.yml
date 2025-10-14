@@ -55,7 +55,8 @@
     # 5️⃣ Lade Logfile zu S3 hoch (per AWS PowerShell)
     - name: Lade Logfile zu S3
       win_shell: |
-        Import-Module AWSPowerShell
-        Write-S3Object -BucketName "{{ s3_bucket }}" -File "{{ log_dir }}\\logging_info.txt" -Key "logging_info_{{ inventory_hostname }}.txt"
+        Import-Module AWSPowerShell#
+        Set-AWSCredential -AccessKey "" -SecretKey "" -StoreAs default
+        Write-S3Object -BucketName "my-log-bucket" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt"
       when: software_location == "baremetal"
       ignore_errors: yes
