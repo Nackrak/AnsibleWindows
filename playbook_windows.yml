@@ -1,62 +1,86 @@
 ---
 - name: Logging Setup für Windows EC2
-  hosts: all
+  hosts: winhosts
   gather_facts: yes
   vars:
-    log_dir: "C:\\myapp"
-    logging_path: "C:\\myapp\\logging.conf"
-    s3_bucket: "my-log-bucket"
+    software_list:
+      - name: "SoftwareXYZ"
+        process_name: "SoftwareXYZ"
+        container_name: "softwarexyz_container"
+      - name: "SoftwareABC"
+        process_name: "SoftwareABC"
+        container_name: "softwareabc_container"
+    logging_base_path: "C:\\myapp"
+    s3_bucket_name: "ansible3testnow"
+    s3_region: "eu-central-1"
 
   tasks:
-    # 1️⃣ Erkennung: Läuft Software im Container oder auf Bare Metal?
-    - name: Prüfe, ob Docker läuft
-      win_shell: docker ps
-      register: docker_check
-      ignore_errors: yes
 
-    - name: Setze software_location Variable
-      set_fact:
-        software_location: "{{ 'container' if docker_check.rc == 0 else 'baremetal' }}"
-
-    # 2️⃣ Analyse: Prüfe, ob Logging-Config existiert
-    - name: Prüfe, ob Logging existiert
-      win_stat:
-        path: "{{ logging_path }}"
-      register: logging_conf
-
-    - name: Setze logging_needed
-      set_fact:
-        logging_needed: "{{ not logging_conf.stat.exists }}"
-
-    - name: Erstelle Logging-Verzeichnis
+    - name: Erstelle Logging-Verzeichnis falls nicht vorhanden
       win_file:
-        path: "{{ log_dir }}"
+        path: "{{ logging_base_path }}"
         state: directory
 
-    # 3️⃣ Umsetzung: Logging konfigurieren, falls nötig
-    - name: Logging konfigurieren
-      win_copy:
-        content: |
-          log_level=INFO
-          log_path=C:\myapp\myapp.log
-        dest: "{{ logging_path }}"
-      when: logging_needed
+    - name: Prüfe alle Softwarelösungen
+      loop: "{{ software_list }}"
+      loop_control:
+        loop_var: software
+      block:
 
-    # 4️⃣ Logging der Config: Schreibe Infos in Textdatei
-    - name: Erstelle Logfile
-      win_copy:
-        content: |
-          Host: {{ inventory_hostname }}
-          Software Location: {{ software_location }}
-          Logging Configured: {{ not logging_needed }}
-          Timestamp: {{ ansible_date_time.date }} {{ ansible_date_time.time }}
-        dest: "{{ log_dir }}\\logging_info.txt"
+        - name: Prüfe, ob Software Prozess läuft (bare metal)
+          win_shell: |
+            if (Get-Process -Name "{{ software.process_name }}" -ErrorAction SilentlyContinue) {
+                Write-Output "running"
+            } else {
+                Write-Output "not_running"
+            }
+          register: software_process
+          ignore_errors: yes
 
-    # 5️⃣ Lade Logfile zu S3 hoch (per AWS PowerShell)
-    - name: Lade Logfile zu S3
-      win_shell: |
-        Import-Module AWSPowerShell#
-        Set-AWSCredential -AccessKey "" -SecretKey "" -StoreAs default
-        Write-S3Object -BucketName "my-log-bucket" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt"
-      when: software_location == "baremetal"
-      ignore_errors: yes
+        - name: Prüfe, ob Software Container läuft
+          win_shell: docker ps --format "{{ '{{.Names}}' }}" 2>$null
+          register: docker_containers
+          ignore_errors: yes
+
+        - name: Bestimme Software Location
+          set_fact:
+            software_location: >-
+              {% if docker_containers.stdout_lines is defined and software.container_name in docker_containers.stdout_lines %}
+                container
+              {% elif software_process.stdout == "running" %}
+                baremetal
+              {% else %}
+                not_installed
+              {% endif %}
+
+        - name: Prüfe, ob Logging Config existiert
+          win_stat:
+            path: "{{ logging_base_path }}\\{{ software.name }}_logging.conf"
+          register: logging_stat
+
+        - name: Setze Variable logging_needed
+          set_fact:
+            logging_needed: "{{ not logging_stat.stat.exists }}"
+
+        - name: Logging konfigurieren
+          win_copy:
+            content: |
+              # Logging Configuration for {{ software.name }}
+              Software running on: {{ software_location }}
+              Logging applied: {{ logging_needed }}
+            dest: "{{ logging_base_path }}\\{{ software.name }}_logging.conf"
+          when: logging_needed
+
+        - name: Erstelle Logfile
+          win_copy:
+            content: |
+              Software: {{ software.name }}
+              Location: {{ software_location }}
+              Logging Configured: {{ logging_needed }}
+            dest: "{{ logging_base_path }}\\{{ software.name }}_logging_info.txt"
+
+        - name: Lade Logfile zu S3
+          win_shell: |
+            Import-Module AWSPowerShell
+            Write-S3Object -BucketName "{{ s3_bucket_name }}" -File "{{ logging_base_path }}\\{{ software.name }}_logging_info.txt" -Key "{{ software.name }}_logging_info.txt" -Region "{{ s3_region }}"
+          ignore_errors: yes
