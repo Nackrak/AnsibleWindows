@@ -3,15 +3,30 @@
   gather_facts: yes
   tasks:
 
-    - name: Prüfe, ob Microsoft Edge läuft (Bare-metal)
-      win_shell: |
-        $proc = Get-Process -Name "msedge" -ErrorAction SilentlyContinue
-        if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
-      register: edge_status
-
-    - name: Setze Variable software_location
+    - name: Definiere Softwareliste
       set_fact:
-        software_location: "{{ 'baremetal' if edge_status.stdout == 'running' else 'container' }}"
+        software_list:
+          - msedge
+          - notepad++
+          - chrome
+
+    - name: Prüfe, ob Software läuft (Bare-metal oder Container)
+      win_shell: |
+        $proc = Get-Process -Name "{{ item }}" -ErrorAction SilentlyContinue
+        if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
+      register: software_status
+      loop: "{{ software_list }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Setze software_location für jede Software
+      set_fact:
+        software_info: >-
+          {{
+            software_info | default({}) |
+            combine({ item.item: ('baremetal' if item.stdout == 'running' else 'container') })
+          }}
+      loop: "{{ software_status.results }}"
 
     - name: Prüfe, ob Logging existiert
       win_stat:
@@ -29,14 +44,16 @@
 
     - name: Logging konfigurieren (nur wenn nötig)
       win_shell: |
-        "software=Microsoft Edge`nlocation={{ software_location }}`nlogging_configured=yes" |
-          Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
+        {% for sw, loc in software_info.items() %}
+        "software={{ sw }}`nlocation={{ loc }}`nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8 -Append
+        {% endfor %}
       when: logging_needed
 
     - name: Erstelle Logfile mit Infos für S3
       win_shell: |
-        "Software: Microsoft Edge`nLocation: {{ software_location }}`nLoggingConfigured: yes" |
-          Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
+        {% for sw, loc in software_info.items() %}
+        "Software: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
+        {% endfor %}
 
     - name: Lade Logfile zu S3
       win_shell: |
