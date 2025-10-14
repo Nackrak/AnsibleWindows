@@ -1,0 +1,61 @@
+---
+- name: Logging Setup für Windows EC2
+  hosts: all
+  gather_facts: yes
+  vars:
+    log_dir: "C:\\myapp"
+    logging_path: "C:\\myapp\\logging.conf"
+    s3_bucket: "my-log-bucket"
+
+  tasks:
+    # 1️⃣ Erkennung: Läuft Software im Container oder auf Bare Metal?
+    - name: Prüfe, ob Docker läuft
+      win_shell: docker ps
+      register: docker_check
+      ignore_errors: yes
+
+    - name: Setze software_location Variable
+      set_fact:
+        software_location: "{{ 'container' if docker_check.rc == 0 else 'baremetal' }}"
+
+    # 2️⃣ Analyse: Prüfe, ob Logging-Config existiert
+    - name: Prüfe, ob Logging existiert
+      win_stat:
+        path: "{{ logging_path }}"
+      register: logging_conf
+
+    - name: Setze logging_needed
+      set_fact:
+        logging_needed: "{{ not logging_conf.stat.exists }}"
+
+    - name: Erstelle Logging-Verzeichnis
+      win_file:
+        path: "{{ log_dir }}"
+        state: directory
+
+    # 3️⃣ Umsetzung: Logging konfigurieren, falls nötig
+    - name: Logging konfigurieren
+      win_copy:
+        content: |
+          log_level=INFO
+          log_path=C:\myapp\myapp.log
+        dest: "{{ logging_path }}"
+      when: logging_needed
+
+    # 4️⃣ Logging der Config: Schreibe Infos in Textdatei
+    - name: Erstelle Logfile
+      win_copy:
+        content: |
+          Host: {{ inventory_hostname }}
+          Software Location: {{ software_location }}
+          Logging Configured: {{ not logging_needed }}
+          Timestamp: {{ ansible_date_time.date }} {{ ansible_date_time.time }}
+        dest: "{{ log_dir }}\\logging_info.txt"
+
+    # 5️⃣ Lade Logfile zu S3 hoch (per AWS PowerShell)
+    - name: Lade Logfile zu S3
+      win_shell: |
+        Import-Module AWSPowerShell
+        Write-S3Object -BucketName "{{ s3_bucket }}" -File "{{ log_dir }}\\logging_info.txt" -Key "logging_info_{{ inventory_hostname }}.txt"
+      when: software_location == "baremetal"
+      ignore_errors: yes
