@@ -7,11 +7,11 @@
       win_shell: |
         $proc = Get-Process -Name "msedge" -ErrorAction SilentlyContinue
         if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
-      register: software_status
+      register: edge_status
 
     - name: Setze Variable software_location
       set_fact:
-        software_location: "baremetal"
+        software_location: "{{ 'baremetal' if edge_status.stdout == 'running' else 'container' }}"
 
     - name: Prüfe, ob Logging existiert
       win_stat:
@@ -29,16 +29,16 @@
 
     - name: Logging konfigurieren (nur wenn nötig)
       win_shell: |
-        "software=Microsoft Edge`nlocation=baremetal`nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
+        "software=Microsoft Edge`nlocation={{ software_location }}`nlogging_configured=yes" |
+          Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
       when: logging_needed
 
     - name: Erstelle Logfile mit Infos für S3
       win_shell: |
-        "Software: Microsoft Edge
-Location: baremetal
-LoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
+        "Software: Microsoft Edge`nLocation: {{ software_location }}`nLoggingConfigured: yes" |
+          Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
 
     - name: Lade Logfile zu S3
       win_shell: |
         Import-Module AWSPowerShell
-        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_edge.txt" -Region "eu-central-1"
+        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
