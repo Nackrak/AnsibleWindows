@@ -1,28 +1,13 @@
----
 - name: Logging Setup für Windows EC2
-  hosts: winhost
+  hosts: winhosts
   gather_facts: yes
-  vars:
-    log_path: "C:\\myapp"
-    bucket_name: "ansible3testnow"
-    software_list:
-      - name: "Microsoft Edge"
-        process_name: "msedge"
-      - name: "Notepad"
-        process_name: "notepad"
-      - name: "Chrome"
-        process_name: "chrome"
-
   tasks:
 
     - name: Prüfe, ob Software läuft (Bare-metal)
       win_shell: |
-        $proc = Get-Process -Name "{{ item.process_name }}" -ErrorAction SilentlyContinue
+        $proc = Get-Process -Name "MeineSoftware" -ErrorAction SilentlyContinue
         if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
       register: software_status
-      loop: "{{ software_list }}"
-      loop_control:
-        label: "{{ item.name }}"
 
     - name: Setze Variable software_location
       set_fact:
@@ -30,42 +15,30 @@
 
     - name: Prüfe, ob Logging existiert
       win_stat:
-        path: "{{ log_path }}\\logging.conf"
-      register: logging_conf
+        path: C:\myapp\logging.conf
+      register: log_file
 
     - name: Setze logging_needed
       set_fact:
-        logging_needed: "{{ not logging_conf.stat.exists }}"
+        logging_needed: "{{ not log_file.stat.exists }}"
 
     - name: Erstelle Logging-Verzeichnis
       win_file:
-        path: "{{ log_path }}"
+        path: C:\myapp
         state: directory
-      when: logging_needed
 
-    - name: Logging konfigurieren
-      win_copy:
-        src: "files/logging.conf"
-        dest: "{{ log_path }}\\logging.conf"
-      when: logging_needed
-      ignore_errors: yes
-
-    - name: Erstelle Logfile für jede Software
+    - name: Logging konfigurieren (nur wenn nötig)
       win_shell: |
-        $content = @"
-Software: "{{ item.name }}"
-Location: "{{ software_location }}"
-Running: "{{ 'yes' if (software_status.results[loop.index0].stdout == 'running') else 'no' }}"
-"@
-        $content | Out-File -FilePath "{{ log_path }}\\{{ item.name | replace(' ','_') }}_logging_info.txt" -Encoding UTF8
-      loop: "{{ software_list }}"
-      loop_control:
-        label: "{{ item.name }}"
+        "software=MeineSoftware`nlocation=baremetal`nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
+      when: logging_needed
 
-    - name: Lade Logfiles zu S3
+    - name: Erstelle Logfile mit Infos für S3
+      win_shell: |
+        "Software: MeineSoftware
+        Location: baremetal
+        LoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
+
+    - name: Lade Logfile zu S3
       win_shell: |
         Import-Module AWSPowerShell
-        $files = Get-ChildItem "{{ log_path }}" -Filter "*_logging_info.txt"
-        foreach ($f in $files) {
-          Write-S3Object -BucketName "{{ bucket_name }}" -File $f.FullName -Key $f.Name -Region "eu-central-1"
-        }
+        Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
