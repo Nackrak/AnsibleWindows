@@ -1,4 +1,3 @@
----
 - name: Logging Setup für Windows EC2
   hosts: winhosts
   gather_facts: yes
@@ -6,7 +5,6 @@
 
     - name: Prüfe, ob Software läuft (Bare-metal)
       win_shell: |
-        # Beispiel: Prüfen, ob ein bestimmter Prozess läuft
         $proc = Get-Process -Name "MeineSoftware" -ErrorAction SilentlyContinue
         if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
       register: software_status
@@ -18,34 +16,29 @@
     - name: Prüfe, ob Logging existiert
       win_stat:
         path: C:\myapp\logging.conf
-      register: logging_conf
+      register: log_file
 
     - name: Setze logging_needed
       set_fact:
-        logging_needed: "{{ not logging_conf.stat.exists }}"
+        logging_needed: "{{ not log_file.stat.exists }}"
 
     - name: Erstelle Logging-Verzeichnis
       win_file:
         path: C:\myapp
         state: directory
 
-    - name: Logging konfigurieren
-      win_copy:
-        src: files/logging.conf
-        dest: C:\myapp\logging.conf
+    - name: Logging konfigurieren (nur wenn nötig)
+      win_shell: |
+        "software=MeineSoftware`nlocation=baremetal`nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
       when: logging_needed
 
-    - name: Erstelle Logfile
-      win_copy:
-        content: |
-          Software: MeineSoftware
-          Status: {{ software_status.stdout }}
-          Logging gesetzt: {{ logging_needed }}
-        dest: C:\myapp\logging_info.txt
+    - name: Erstelle Logfile mit Infos für S3
+      win_shell: |
+        "Software: MeineSoftware
+        Location: baremetal
+        LoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
 
     - name: Lade Logfile zu S3
       win_shell: |
         Import-Module AWSPowerShell
         Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
-      args:
-        executable: powershell.exe
