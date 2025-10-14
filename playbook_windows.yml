@@ -3,6 +3,8 @@
   hosts: winhost
   gather_facts: yes
   vars:
+    log_path: "C:\\myapp"
+    bucket_name: "ansible3testnow"
     software_list:
       - name: "Microsoft Edge"
         process_name: "msedge"
@@ -10,9 +12,6 @@
         process_name: "notepad"
       - name: "Chrome"
         process_name: "chrome"
-    log_path: "C:\\myapp"
-    s3_bucket: "ansible3testnow"
-    s3_region: "eu-central-1"
 
   tasks:
 
@@ -29,16 +28,35 @@
       set_fact:
         software_location: "baremetal"
 
-    - name: Prüfe, ob Logging-Verzeichnis existiert
+    - name: Prüfe, ob Logging existiert
+      win_stat:
+        path: "{{ log_path }}\\logging.conf"
+      register: logging_conf
+
+    - name: Setze logging_needed
+      set_fact:
+        logging_needed: "{{ not logging_conf.stat.exists }}"
+
+    - name: Erstelle Logging-Verzeichnis
       win_file:
         path: "{{ log_path }}"
         state: directory
+      when: logging_needed
+
+    - name: Logging konfigurieren
+      win_copy:
+        src: "files/logging.conf"
+        dest: "{{ log_path }}\\logging.conf"
+      when: logging_needed
+      ignore_errors: yes
 
     - name: Erstelle Logfile für jede Software
       win_shell: |
-        $content = "Software: {{ item.name }}
-Location: {{ software_location }}
-Running: {{ 'yes' if (software_status.results[loop.index0].stdout == 'running') else 'no' }}"
+        $content = @"
+Software: "{{ item.name }}"
+Location: "{{ software_location }}"
+Running: "{{ 'yes' if (software_status.results[loop.index0].stdout == 'running') else 'no' }}"
+"@
         $content | Out-File -FilePath "{{ log_path }}\\{{ item.name | replace(' ','_') }}_logging_info.txt" -Encoding UTF8
       loop: "{{ software_list }}"
       loop_control:
@@ -47,13 +65,7 @@ Running: {{ 'yes' if (software_status.results[loop.index0].stdout == 'running') 
     - name: Lade Logfiles zu S3
       win_shell: |
         Import-Module AWSPowerShell
-        Write-S3Object -BucketName "{{ s3_bucket }}" `
-          -File "{{ log_path }}\\{{ item.name | replace(' ','_') }}_logging_info.txt" `
-          -Key "{{ item.name | replace(' ','_') }}_logging_info.txt" `
-          -Region "{{ s3_region }}"
-      loop: "{{ software_list }}"
-      loop_control:
-        label: "{{ item.name }}"
-      ignore_errors: yes
-      args:
-        executable: powershell.exe
+        $files = Get-ChildItem "{{ log_path }}" -Filter "*_logging_info.txt"
+        foreach ($f in $files) {
+          Write-S3Object -BucketName "{{ bucket_name }}" -File $f.FullName -Key $f.Name -Region "eu-central-1"
+        }
