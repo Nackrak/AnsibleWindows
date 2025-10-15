@@ -3,33 +3,40 @@
   gather_facts: yes
   tasks:
 
-    - name: Prüfe, ob Edge auf Bare Metal läuft
-      win_shell: |
-        $proc = Get-Process -Name "msedge" -ErrorAction SilentlyContinue
-        if ($proc) { Write-Output "baremetal" } else { Write-Output "none" }
-      register: edge_status
-
-    - name: Prüfe, ob Edge in Container läuft (Docker)
-      win_shell: |
-        $docker = Get-Command docker -ErrorAction SilentlyContinue
-        if ($docker) {
-          $container = docker ps --filter "name=edge" --format "{{ '{{.Names}}' }}"
-          if ($container) { Write-Output "container" } else { Write-Output "none" }
-        } else {
-          Write-Output "none"
-        }
-      register: edge_container_status
-
-    - name: Setze Variable software_location für Edge
+    - name: Definiere Softwareliste
       set_fact:
-        edge_location: >-
-          {% if edge_status.stdout == "baremetal" %}
-            baremetal
-          {% elif edge_container_status.stdout == "container" %}
-            container
-          {% else %}
-            not_installed
-          {% endif %}
+        software_list:
+          - msedge
+          - notepad++
+          - chrome
+
+    - name: Prüfe Software-Status (Bare-metal oder Container)
+      win_shell: |
+        $proc = Get-Process -Name "{{ item }}" -ErrorAction SilentlyContinue
+        if ($proc) {
+            Write-Output "baremetal"
+        } else {
+            $docker = Get-Command docker -ErrorAction SilentlyContinue
+            if ($docker) {
+                $container = docker ps --filter "name={{ item }}" --format "{{ '{{.Names}}' }}"
+                if ($container) { Write-Output "container" } else { Write-Output "none" }
+            } else {
+                Write-Output "none"
+            }
+        }
+      register: software_status
+      loop: "{{ software_list }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Setze software_location für jede Software
+      set_fact:
+        software_info: >-
+          {{
+            software_info | default({}) |
+            combine({ item.item: item.stdout })
+          }}
+      loop: "{{ software_status.results }}"
 
     - name: Prüfe, ob Logging existiert
       win_stat:
@@ -47,20 +54,18 @@
 
     - name: Logging konfigurieren (nur wenn nötig)
       win_shell: |
-        "software=Microsoft Edge`nlocation={{ edge_location }} `nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8
+        {% for sw, loc in software_info.items() %}
+        "software={{ sw }}`nlocation={{ loc }}`nlogging_configured=yes" | Out-File -FilePath C:\myapp\logging.conf -Encoding UTF8 -Append
+        {% endfor %}
       when: logging_needed
 
     - name: Erstelle Logfile mit Infos für S3
       win_shell: |
-        $content = @"
-Software: Microsoft Edge
-Location: {{ edge_location }}
-LoggingConfigured: yes
-"@
-        $content | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8
+        {% for sw, loc in software_info.items() %}
+        "Software: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
+        {% endfor %}
 
     - name: Lade Logfile zu S3
       win_shell: |
         Import-Module AWSPowerShell
         Write-S3Object -BucketName "ansible3testnow" -File "C:\myapp\logging_info.txt" -Key "logging_info_winhost.txt" -Region "eu-central-1"
-      ignore_errors: yes
