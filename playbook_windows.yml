@@ -59,11 +59,13 @@
         {% endfor %}
       when: logging_needed
 
-    - name: Erstelle Logfile mit Infos für S3
-      win_shell: |
-        {% for sw, loc in software_info.items() %}
-        "Software: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
-        {% endfor %}
+    - name: Erstelle Logfile mit Infos für S3 (mit Datum & Uhrzeit)
+  win_shell: |
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    {% for sw, loc in software_info.items() %}
+    "Timestamp: $timestamp`nSoftware: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes`n---" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
+    {% endfor %}
+
 
     - name: Lade Logfile zu S3
       win_shell: |
