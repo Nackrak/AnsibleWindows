@@ -1,3 +1,4 @@
+---
 - name: Logging Setup für Windows EC2
   hosts: winhosts
   gather_facts: yes
@@ -10,20 +11,10 @@
           - notepad++
           - chrome
 
-    - name: Prüfe Software-Status (Bare-metal oder Container)
+    - name: Prüfe, ob Software läuft (Bare-metal oder Container)
       win_shell: |
         $proc = Get-Process -Name "{{ item }}" -ErrorAction SilentlyContinue
-        if ($proc) {
-            Write-Output "baremetal"
-        } else {
-            $docker = Get-Command docker -ErrorAction SilentlyContinue
-            if ($docker) {
-                $container = docker ps --filter "name={{ item }}" --format "{{ '{{.Names}}' }}"
-                if ($container) { Write-Output "container" } else { Write-Output "none" }
-            } else {
-                Write-Output "none"
-            }
-        }
+        if ($proc) { Write-Output "running" } else { Write-Output "stopped" }
       register: software_status
       loop: "{{ software_list }}"
       loop_control:
@@ -34,7 +25,7 @@
         software_info: >-
           {{
             software_info | default({}) |
-            combine({ item.item: item.stdout })
+            combine({ item.item: ('baremetal' if item.stdout == 'running' else 'container') })
           }}
       loop: "{{ software_status.results }}"
 
@@ -60,12 +51,11 @@
       when: logging_needed
 
     - name: Erstelle Logfile mit Infos für S3 (mit Datum & Uhrzeit)
-  win_shell: |
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    {% for sw, loc in software_info.items() %}
-    "Timestamp: $timestamp`nSoftware: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes`n---" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
-    {% endfor %}
-
+      win_shell: |
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        {% for sw, loc in software_info.items() %}
+        "Timestamp: $timestamp`nSoftware: {{ sw }}`nLocation: {{ loc }}`nLoggingConfigured: yes`n---" | Out-File -FilePath C:\myapp\logging_info.txt -Encoding UTF8 -Append
+        {% endfor %}
 
     - name: Lade Logfile zu S3
       win_shell: |
