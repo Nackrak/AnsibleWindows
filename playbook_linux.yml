@@ -1,0 +1,86 @@
+- name: Logging Setup für Linux EC2
+  hosts: linuxhosts
+  gather_facts: yes
+  tasks:
+
+    - name: Definiere Softwareliste
+      set_fact:
+        software_list:
+          - firefox
+          - chrome
+          - nginx
+
+    - name: Prüfe Software-Status (Bare-metal oder Container)
+      shell: |
+        if pgrep -x "{{ item }}" > /dev/null; then
+          echo "baremetal"
+        elif command -v docker >/dev/null 2>&1; then
+          container=$(docker ps --filter "name={{ item }}" --format "{{'{{.Names}}'}}")
+          if [ -n "$container" ]; then
+            echo "container"
+          else
+            echo "none"
+          fi
+        else
+          echo "none"
+        fi
+      register: software_status
+      loop: "{{ software_list }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Setze software_location für jede Software
+      set_fact:
+        software_info: >-
+          {{
+            software_info | default({}) |
+            combine({ item.item: item.stdout })
+          }}
+      loop: "{{ software_status.results }}"
+
+    - name: Prüfe, ob Logging existiert
+      stat:
+        path: /tmp/logging.conf
+      register: log_file
+
+    - name: Setze logging_needed
+      set_fact:
+        logging_needed: "{{ not log_file.stat.exists }}"
+
+    - name: Erstelle Logging-Verzeichnis
+      file:
+        path: /tmp/myapp
+        state: directory
+
+    - name: Logging konfigurieren (nur wenn nötig)
+      copy:
+        dest: /tmp/myapp/logging.conf
+        content: |
+          {% for sw, loc in software_info.items() %}
+          software={{ sw }}
+          location={{ loc }}
+          logging_configured=yes
+          {% endfor %}
+        owner: root
+        group: root
+        mode: '0644'
+      when: logging_needed
+
+    - name: Erstelle Logfile mit Infos für S3
+      copy:
+        dest: /tmp/myapp/logging_info.txt
+        content: |
+          {% for sw, loc in software_info.items() %}
+          Software: {{ sw }}
+          Location: {{ loc }}
+          LoggingConfigured: yes
+          {% endfor %}
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Lade Logfile zu S3
+      shell: |
+        aws s3 cp /tmp/myapp/logging_info.txt s3://ansible3testnow/logging_info_linuxhost.txt --region eu-central-1
+      environment:
+        AWS_DEFAULT_REGION: eu-central-1
